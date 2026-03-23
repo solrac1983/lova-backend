@@ -1,197 +1,214 @@
-// Supabase Edge Function: send-prompt (Lovable Headless Bypass - Standalone)
-// Substitui a dependencia do PromptX por um motor proprio usando OpenRouter + Lovable edit-code API.
-// Versao Independente Local: nao checa banco de dados ou licencas.
-
 // === CORS ===
 const corsHeaders = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, apikey",
 };
 
 // === CONSTANTES ===
 const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY") || "";
 
 function jsonResponse(data: Record<string, unknown>, status = 200) {
-        return new Response(JSON.stringify(data), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+            return new Response(JSON.stringify(data), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 }
 
 function errorResponse(message: string, status = 400) {
-        return jsonResponse({ success: false, error: message }, status);
+            return jsonResponse({ success: false, error: message }, status);
 }
 
 // === LOGICA DO HEADLESS BYPASS ===
-
 async function getLovableSourceCode(projectId: string, token: string) {
-        const res = await fetch(`https://api.lovable.dev/projects/${projectId}/source-code`, {
-                  headers: { 
-                    "Authorization": `Bearer ${token}`,
-                              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                              "Origin": "https://lovable.dev",
-                              "Referer": "https://lovable.dev/"
-                  }
-        });
-        if (!res.ok) throw new Error(`Falha ao obter codigo-fonte do Lovable: ${res.status}`);
-        const data = await res.json();
-        return data.files || [];
+            const res = await fetch(`https://api.lovable.dev/projects/${projectId}/source-code`, {
+                            headers: { 
+                                "Authorization": `Bearer ${token}`,
+                                                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                                                "Origin": "https://lovable.dev",
+                                                "Referer": "https://lovable.dev/"
+                            }
+            });
+            if (!res.ok) throw new Error(`Falha ao obter codigo-fonte do Lovable: ${res.status}`);
+            const data = await res.json();
+            return data.files || [];
 }
 
 async function applyLovableCodeEdits(projectId: string, token: string, changes: any[], commitMessage: string) {
-        if (!changes || changes.length === 0) return true;
+            if (!changes || changes.length === 0) return true;
 
-  const editUrl = `https://api.lovable.dev/projects/${projectId}/edit-code`;
-        const payload = {
-                  changes: changes,
-                  uploads: [],
-                  commit_message: commitMessage,
-                  file_edit_type: "CodeEdit"
-        };
+    const editUrl = `https://api.lovable.dev/projects/${projectId}/edit-code`;
+            const payload = {
+                            changes: changes,
+                            uploads: [],
+                            commit_message: commitMessage,
+                            file_edit_type: "CodeEdit"
+            };
 
-  const res = await fetch(editUrl, {
-            method: "POST",
-            headers: {
-                        "Authorization": `Bearer ${token}`,
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                        "Origin": "https://lovable.dev",
-                        "Referer": "https://lovable.dev/"
-            },
-            body: JSON.stringify(payload)
-  });
+    const res = await fetch(editUrl, {
+                    method: "POST",
+                    headers: {
+                                        "Authorization": `Bearer ${token}`,
+                                        "Content-Type": "application/json",
+                                        "Accept": "application/json",
+                                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+                                        "Origin": "https://lovable.dev",
+                                        "Referer": "https://lovable.dev/"
+                    },
+                    body: JSON.stringify(payload)
+    });
 
-  if (!res.ok) {
-            const txt = await res.text();
-            throw new Error(`Falha ao aplicar edicoes: ${res.status} ${txt}`);
-  }
-        return true;
+    if (!res.ok) {
+                    const txt = await res.text();
+                    throw new Error(`Falha ao aplicar edicoes: ${res.status} ${txt}`);
+    }
+            return true;
 }
-
 async function callOpenRouter(files: any[], userMessage: string) {
-        let contextStr = "### CODIGO FONTE ATUAL DO PROJETO ###\n\n";
-        for (const f of files) {
-                  if (f.binary || f.sizeExceeded || !f.contents) continue;
-                  if (f.name.includes("package-lock.json") || f.name.includes("bun.lockb")) continue;
-                  contextStr += `--- ARQUIVO: ${f.name} ---\n${f.contents}\n\n`;
-        }
+            // Montar contexto dos arquivos
+    let contextStr = "### CODIGO FONTE ATUAL DO PROJETO ###\n\n";
+            for (const f of files) {
+                            if (f.binary || f.sizeExceeded || !f.contents) continue;
+                            // Pular arquivos que comumente nao precisam de edicao e gastam muito token
+                if (f.name.includes("package-lock.json") || f.name.includes("bun.lockb")) continue;
 
-  const systemPrompt = `Voce e um Engenheiro de Software Senior especialista em React, TypeScript, Vite e Tailwind CSS.
-  Voce esta trabalhando em um projeto (codigo fornecido abaixo).
-
-  Instrucoes Criticas:
-  1. O usuario fara um pedido de alteracao ou adicao no sistema.
-  2. Voce deve analisar os arquivos atuais e determinar quais arquivos precisam ser modificados ou criados.
-  3. Voce DEVE retornar EXCLUSIVAMENTE um objeto JSON valido (sem blocos Markdown json em volta, apenas o JSON texto puro).
-  4. O objeto JSON deve ter exatos dois campos:
-     - "explanation": uma string em portugues explicando de forma amigavel ao usuario o que foi modificado e como testar. (Seja breve, no maximo 3 paragrafos).
-        - "changes": um array de objetos. Cada objeto deve ter:
-             - "path": o caminho completo do arquivo (ex: "src/App.tsx")
-                  - "content": TODO O CODIGO NOVO deste arquivo. NAO trunque, NAO use comentarios como "// resto do codigo". Voce DEVE fornecer o arquivo modificado por inteiro para ser salvo.
-
-                  Exemplo de Saida Esperada:
-                  {
-                    "explanation": "Adicionei o botao de login conforme solicitado.",
-                      "changes": [
-                          {
-                                "path": "src/App.tsx",
-                                      "content": "import React from 'react';\\n\\nexport default function App() {\\n  return <div>App</div>;\\n}\\n"
-                                          }
-                                            ]
-                                            }
-
-                                            Nao inclua nenhum texto antes ou depois da chave de abertura '{' e fechamento '}'. Certifique-se de escapar corretamente aspas dentro do 'content'.`;
-
-  console.log("[send-prompt] Chamando OpenRouter...");
-        const ores = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-                  method: "POST",
-                  headers: {
-                              "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
-                              "Content-Type": "application/json",
-                              "HTTP-Referer": "https://lovable-infinity-panel.vercel.app",
-                              "X-Title": "Lovable Infinity"
-                  },
-                  body: JSON.stringify({
-                              model: "anthropic/claude-3.5-sonnet",
-                              messages: [
-                                    { role: "system", content: systemPrompt },
-                                    { role: "user", content: `${contextStr}\n\n### PEDIDO DO USUARIO ###\n${userMessage}` }
-                                          ],
-                              response_format: { type: "json_object" }
-                  })
-        });
-
-  if (!ores.ok) {
-            const errTxt = await ores.text();
-            throw new Error(`OpenRouter Erro: ${ores.status} ${errTxt}`);
-  }
-
-  const oData = await ores.json();
-        const content = oData.choices[0].message.content.trim();
-
-  console.log("[send-prompt] Resposta do OpenRouter recebida. Tamanho:", content.length);
-
-  try {
-            const parsed = JSON.parse(content);
-            return parsed;
-  } catch (e) {
-            const match = content.match(/(\{[\s\S]*\})/);
-            if (match && match[1]) {
-                        return JSON.parse(match[1]);
+                contextStr += `--- ARQUIVO: ${f.name} ---\n${f.contents}\n\n`;
             }
-            throw new Error("Falha ao parsear JSON da IA. Conteudo inesperado.");
-  }
-}
 
+    const systemPrompt = `Voce e um Engenheiro de Software Senior especialista em React, TypeScript, Vite e Tailwind CSS.
+    Voce esta trabalhando em um projeto (codigo fornecido abaixo).
+
+    Instrucoes Criticas:
+    1. O usuario fara um pedido de alteracao ou adicao no sistema.
+    2. Voce deve analisar os arquivos atuais e determinar quais arquivos precisam ser modificados ou criados.
+    3. Voce DEVE retornar EXCLUSIVAMENTE um objeto JSON valido (sem blocos Markdown \` \` \` json em volta, apenas o JSON texto puro).
+    4. O objeto JSON deve ter exatos dois campos:
+       - "explanation": uma string em portugues explicando de forma amigavel ao usuario o que foi modificado e como testar. (Seja breve, no maximo 3 paragrafos).
+          - "changes": um array de objetos. Cada objeto deve ter:
+                 - "path": o caminho completo do arquivo (ex: "src/App.tsx")
+                        - "content": TODO O CODIGO NOVO deste arquivo. NAO trunque, NAO use comentarios como "// resto do codigo". Voce DEVE fornecer o arquivo modificado por inteiro para ser salvo.
+
+                               Exemplo de Saida Esperada:
+                               {
+                                 "explanation": "Adicionei o botao de login conforme solicitado.",
+                                   "changes": [
+                                       {
+                                             "path": "src/App.tsx",
+                                                   "content": "import React from 'react';\\n\\nexport default function App() {\\n  return <div>App</div>;\\n}\\n"
+                                                       }
+                                                         ]
+                                                         }
+
+                                                         Nao inclua nenhum texto antes ou depois da chave de abertura '{' e fechamento '}'. Certifique-se de escapar corretamente aspas dentro do 'content'.`;
+
+    console.log("[send-prompt] Chamando OpenRouter...");
+            const ores = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                            method: "POST",
+                            headers: {
+                                                "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+                                                "Content-Type": "application/json",
+                                                "HTTP-Referer": "https://lovable-infinity-panel.vercel.app",
+                                                "X-Title": "Lovable Infinity"
+                            },
+                            body: JSON.stringify({
+                                                model: "anthropic/claude-3.5-sonnet",
+                                                messages: [
+                                                        { role: "system", content: systemPrompt },
+                                                        { role: "user", content: `${contextStr}\n\n### PEDIDO DO USUARIO ###\n${userMessage}` }
+                                                                    ],
+                                                response_format: { type: "json_object" }
+                            })
+            });
+
+    if (!ores.ok) {
+                    const errTxt = await ores.text();
+                    throw new Error(`OpenRouter Erro: ${ores.status} ${errTxt}`);
+    }
+
+    const oData = await ores.json();
+            const content = oData.choices[0].message.content.trim();
+
+    console.log("[send-prompt] Resposta do OpenRouter recebida. Tamanho:", content.length);
+
+    try {
+                    const parsed = JSON.parse(content);
+                    return parsed;
+    } catch (e) {
+                    const match = content.match(/` ``(?:json)?\s*([\s\S]*?)\s*` ``/);
+                    if (match && match[1]) {
+                                        return JSON.parse(match[1]);
+                    }
+                    throw new Error("Falha ao parsear JSON da IA. Conteudo inesperado.");
+    }
+}
 const PORT = parseInt(Deno.env.get("PORT") || "8000");
 
-Deno.serve({ port: PORT, hostname: "0.0.0.0" }, async (req) => {
-        const url = new URL(req.url);
-        if (url.pathname === "/health") {
-                  return jsonResponse({ status: "ok", message: "Lovable Headless Bypass is running" });
-        }
+Deno.serve({ port: PORT, hostname: "0.0.0.0" }, async (req: Request) => {
+            // Rota de Health Check
+               if (req.method === "GET") {
+                               return jsonResponse({ status: "ok", message: "Lovable Headless Bypass is running" });
+               }
 
-             if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
-        if (req.method !== "POST") return errorResponse("Metodo nao permitido", 405);
+               if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
+            if (req.method !== "POST") return errorResponse("Metodo nao permitido", 405);
 
-             if (!OPENROUTER_API_KEY) {
-                       console.error("[send-prompt] OPENROUTER_API_KEY nao configurada!");
-                       return errorResponse("Servico de IA nao configurado. Adicione OPENROUTER_API_KEY no ambiente.", 503);
-             }
+               if (!OPENROUTER_API_KEY) {
+                               console.error("[send-prompt] OPENROUTER_API_KEY nao configurada!");
+                               return errorResponse("Servico de IA nao configurado. Adicione OPENROUTER_API_KEY no ambiente.", 503);
+               }
 
-             try {
-                       const body = await req.json();
-                       const { message, projectId, token, files } = body;
+               try {
+                               const body = await req.json();
+                               const { message, projectId, token, files, sourceFiles: providedFiles } = body;
 
-          if (!projectId || !token) return errorResponse("Dados incompletos: projectId e token sao obrigatorios.");
-                       if (!message && (!files || files.length === 0)) return errorResponse("Informe uma mensagem or anexe arquivos.");
+                if (!projectId || !token) return errorResponse("Dados incompletos: projectId e token sao obrigatorios.");
+                               if (!message && (!files || files.length === 0)) return errorResponse("Informe uma mensagem ou anexe arquivos.");
 
-          console.log(`[send-prompt] Iniciando fluxo Headless para projeto: ${projectId}`);
-                       const sourceFiles = await getLovableSourceCode(projectId, token);
-                       console.log(`[send-prompt] Baixou ${sourceFiles.length} arquivos locais do Lovable.`);
+                console.log(`[send-prompt] Iniciando fluxo Headless para projeto: ${projectId}`);
 
-          const aiResult = await callOpenRouter(sourceFiles, message);
-                       console.log(`[send-prompt] IA gerou ${aiResult?.changes?.length || 0} edicoes de arquivo.`);
+                let sourceFiles = providedFiles;
+                               if (!sourceFiles || sourceFiles.length === 0) {
+                                                   console.log(`[send-prompt] [AVISO] sourceFiles nao recebidos da extensao. Iniciando fallback via API...`);
+                                                   try {
+                                                                           sourceFiles = await getLovableSourceCode(projectId, token);
+                                                                           console.log(`[send-prompt] Fallback concluido com sucesso (\${sourceFiles.length} arquivos).`);
+                                                   } catch (err: any) {
+                console.error(`[send-prompt] [ERRO CRITICO] Falha no fallback de codigo-fonte:`, err.message);
+                                                                           return new Response(JSON.stringify({ 
+                                                                                                                                  success: false, 
+                                                                                                       error: `Falha ao obter codigo-fonte (Erro 403). Certifique-se de que a extensao esta atualizada e que voce deu F5 na aba do Lovable.` 
+                                                                           }), {
+                                                                                                       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+                                                                                                       status: 403
+                                                                           });
+                                                   }
+                               } else {
+                                                   console.log(`[send-prompt] Usando \${sourceFiles.length} arquivos enviados pela extensao.`);
+                               }
 
-          if (aiResult.changes && Array.isArray(aiResult.changes) && aiResult.changes.length > 0) {
-                      const commitMsg = message.substring(0, 50) + "...";
-                      await applyLovableCodeEdits(projectId, token, aiResult.changes, commitMsg);
-                      console.log(`[send-prompt] Edicoes aplicadas com sucesso via edit-code API.`);
-          }
+                console.log(`[send-prompt] Processando \${sourceFiles.length} arquivos locais do Lovable.`);
 
-          return jsonResponse({
-                      success: true,
-                      message: "Enviado e aplicado com sucesso!",
-                      explanation: aiResult.explanation,
-                      data: {
-                                    message: aiResult.explanation
-                      }
-          });
+                const aiResult = await callOpenRouter(sourceFiles, message);
+                               console.log(`[send-prompt] IA gerou \${aiResult?.changes?.length || 0} edicoes de arquivo.`);
 
-             } catch (error) {
-                       console.error("[send-prompt] Erro geral:", error);
-                       if ((error as Error).message.includes("edit-code")) {
-                                   return errorResponse(`Erro ao aplicar codigo no Lovable: ${(error as Error).message}`, 502);
-                       }
-                       return errorResponse(`Erro interno: ${(error as Error).message}`, 500);
-             }
+                if (aiResult.changes && Array.isArray(aiResult.changes) && aiResult.changes.length > 0) {
+                                    const commitMsg = message.substring(0, 50) + "...";
+                                    await applyLovableCodeEdits(projectId, token, aiResult.changes, commitMsg);
+                                    console.log(`[send-prompt] Edicoes aplicadas com sucesso via edit-code API.`);
+                }
+
+                return jsonResponse({
+                                    success: true,
+                                    message: "Enviado e aplicado com sucesso!",
+                                    explanation: aiResult.explanation,
+                                    data: {
+                                                            message: aiResult.explanation
+                                    }
+                });
+
+               } catch (error) {
+                               console.error("[send-prompt] Erro geral:", error);
+                               if ((error as Error).message.includes("edit-code")) {
+                                                   return errorResponse(`Erro ao aplicar codigo no Lovable: \${(error as Error).message}`, 502);
+                               }
+
+                return errorResponse(`Erro interno: \${(error as Error).message}`, 500);
+               }
 });
